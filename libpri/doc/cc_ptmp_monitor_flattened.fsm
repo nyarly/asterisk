@@ -1,0 +1,225 @@
+/*
+ * FSM pseudo code used in the design/implementation of the CC PTMP monitor.
+ *
+ * The CCBSStatusRequest messages are handled independently from this FSM.
+ *
+ * The CCBSInterrogate/CCNRInterrogate messages are initiated by a dialplan
+ * application/AMI/CLI (future) and are handled outside of this FSM.
+ */
+FSM CC_PTMP_Monitor
+{
+	State CC_STATE_IDLE {
+		Stimulus CC_EVENT_AVAILABLE {
+			/*
+			 * Before event is posted:
+			 *   Received CallInfoRetain
+			 *   Created cc_record
+			 *   Saved CallLinkageID
+			 */
+			Action Pass_Up_CC_Available;
+			Next_State CC_STATE_AVAILABLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Set_Selfdestruct;
+		}
+	}
+	State CC_STATE_AVAILABLE {
+		/*
+		 * The upper layer is responsible for canceling the CC available
+		 * offering as a safeguard in case the network cable is disconnected.
+		 * The timer should be set much longer than the network T_RETENTION
+		 * timer so normally the CC records will be cleaned up by network
+		 * activity.
+		 */
+		Stimulus CC_EVENT_CC_REQUEST {
+			/* cc_record->is_ccnr is set before event posted. */
+			Action Queue_CC_Request;
+			Action Start_T_ACTIVATE;
+			Next_State CC_STATE_REQUESTED;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_RETENTION {
+			/*
+			 * Received EraseCallLinkageID
+			 * T_RETENTION expired on the network side so we will pretend
+			 * that it expired on our side.
+			 */
+			Action Pass_Up_CC_Cancel;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_REQUESTED {
+		Stimulus CC_EVENT_CC_REQUEST_ACCEPT {
+			/*
+			 * Before event is posted:
+			 *   Received CCBSRequest/CCNRRequest response
+			 *   Saved CCBSReference
+			 */
+			Action Relese_LinkID;
+			Action Pass_Up_CC_Req_Rsp_Success;
+			Action Stop_T_ACTIVATE;
+			/*
+			 * Start T_CCBS2 or T_CCNR2 depending upon CC mode.
+			 * For PTMP TE mode these timers are not defined.  However,
+			 * we will use them anyway to protect our resources from leaks
+			 * caused by the network cable being disconnected.  These
+			 * timers should be set much longer than the network
+			 * so normally the CC records will be cleaned up by network
+			 * activity.
+			 */
+			Action Start_T_SUPERVISION;
+			Next_State CC_STATE_ACTIVATED;
+		}
+		Stimulus CC_EVENT_CC_REQUEST_FAIL {
+			Action Pass_Up_CC_Req_Rsp_Fail(error/reject, code);
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_ACTIVATE;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_ACTIVATE {
+			Action Pass_Up_CC_Req_Rsp_Timeout;
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_ACTIVATE;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_LINK_CANCEL {
+			/* Received CCBSErase */
+			/* Claim it was a timeout */
+			Action Pass_Up_CC_Req_Rsp_Timeout;
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_ACTIVATE;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Next_State CC_STATE_WAIT_DESTRUCTION;
+		}
+	}
+	State CC_STATE_WAIT_DESTRUCTION {
+		/* We were in the middle of a cc-request when we were asked to cancel. */
+		Stimulus CC_EVENT_CC_REQUEST_ACCEPT {
+			/*
+			 * Before event is posted:
+			 *   Received CCBSRequest/CCNRRequest response
+			 *   Saved CCBSReference
+			 */
+			Action Send_CC_Deactivate_Req;
+			Action Stop_T_ACTIVATE;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CC_REQUEST_FAIL {
+			Action Stop_T_ACTIVATE;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_ACTIVATE {
+			Action Stop_T_ACTIVATE;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_LINK_CANCEL {
+			/* Received CCBSErase */
+			Action Stop_T_ACTIVATE;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_ACTIVATED {
+		Stimulus CC_EVENT_B_FREE {
+			/* Received CCBSBFree */
+			Action Pass_Up_B_Free;
+		}
+		Stimulus CC_EVENT_REMOTE_USER_FREE {
+			/* Received CCBSRemoteUserFree */
+			Action Pass_Up_Remote_User_Free;
+			Next_State CC_STATE_WAIT_CALLBACK;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_SUPERVISION {
+			Action Send_CC_Deactivate_Req;
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_LINK_CANCEL {
+			/* Received CCBSErase */
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Send_CC_Deactivate_Req;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_WAIT_CALLBACK {
+		Stimulus CC_EVENT_STOP_ALERTING {
+			Action Pass_Up_Stop_Alerting;
+			Next_State CC_STATE_ACTIVATED;
+		}
+		Stimulus CC_EVENT_RECALL {
+			/* The original call parameters have already been set. */
+			Action Queue_SETUP_Recall;
+			Next_State CC_STATE_CALLBACK;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_SUPERVISION {
+			Action Send_CC_Deactivate_Req;
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_LINK_CANCEL {
+			/* Received CCBSErase */
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Send_CC_Deactivate_Req;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_CALLBACK {
+		/*
+		 * We are waiting for the CC records to be torn down because
+		 * CC is complete.
+		 * This state is mainly to block CC_EVENT_STOP_ALERTING since
+		 * we are the one doing the CC recall so we do not need to stop
+		 * alerting.
+		 */
+		Stimulus CC_EVENT_TIMEOUT_T_SUPERVISION {
+			Action Send_CC_Deactivate_Req;
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_LINK_CANCEL {
+			/* Received CCBSErase */
+			Action Pass_Up_CC_Cancel;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Send_CC_Deactivate_Req;
+			Action Stop_T_SUPERVISION;
+			Action Set_Selfdestruct;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+}

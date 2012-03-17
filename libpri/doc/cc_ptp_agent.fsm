@@ -1,0 +1,152 @@
+/*
+ * FSM pseudo code used in the design/implementation of the CC PTP agent.
+ */
+FSM CC_PTP_Agent
+{
+	State CC_STATE_IDLE {
+		Init {
+		}
+		Prolog {
+			Action Set_Selfdestruct;
+		}
+		Stimulus CC_EVENT_AVAILABLE {
+			Next_State CC_STATE_PENDING_AVAILABLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Set_Selfdestruct;
+		}
+	}
+	State CC_STATE_PENDING_AVAILABLE {
+		Stimulus CC_EVENT_MSG_ALERTING {
+			Action Send_CC_Available(Q931_ALERTING);
+			Next_State CC_STATE_AVAILABLE;
+		}
+		Stimulus CC_EVENT_MSG_DISCONNECT {
+			Action Send_CC_Available(Q931_DISCONNECT);
+			Next_State CC_STATE_AVAILABLE;
+		}
+		Stimulus CC_EVENT_INTERNAL_CLEARING {
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_AVAILABLE {
+		/*
+		 * For PTP mode the T_RETENTION timer is not defined.  However,
+		 * we will use it anyway in this state to protect our resources
+		 * from leaks caused by user A not requesting CC.  This timer
+		 * should be set much longer than the PTMP network link to
+		 * allow for variations in user A's CC offer timer.
+		 */
+		Epilog {
+			Action Stop_T_RETENTION;
+		}
+		Stimulus CC_EVENT_MSG_RELEASE {
+			Action Stop_T_RETENTION;
+			Action Start_T_RETENTION;
+		}
+		Stimulus CC_EVENT_MSG_RELEASE_COMPLETE {
+			Action Stop_T_RETENTION;
+			Action Start_T_RETENTION;
+		}
+		Stimulus CC_EVENT_CC_REQUEST {
+			Action Pass_Up_CC_Request;
+			Action Stop_T_RETENTION;
+			Next_State CC_STATE_REQUESTED;
+		}
+		Stimulus CC_EVENT_INTERNAL_CLEARING {
+			Action Stop_T_RETENTION;
+			Action Start_T_RETENTION;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_RETENTION {
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_REQUESTED {
+		Stimulus CC_EVENT_CC_REQUEST_ACCEPT {
+			Next_State CC_STATE_ACTIVATED;
+		}
+		Stimulus CC_EVENT_SIGNALING_GONE {
+			/* Signaling link cleared. */
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_ACTIVATED {
+		Prolog {
+			Action Reset_A_Status;
+		}
+		Stimulus CC_EVENT_REMOTE_USER_FREE {
+			Action Pass_Up_A_Status_Indirect;
+			Test = Get_A_Status;
+			Test == Busy {
+				Next_State CC_STATE_SUSPENDED;
+			}
+			Action Send_RemoteUserFree;
+			Next_State CC_STATE_WAIT_CALLBACK;
+		}
+		Stimulus CC_EVENT_SUSPEND {
+			/* Received CCBS_T_Suspend */
+			Action Set_A_Status_Busy;
+		}
+		Stimulus CC_EVENT_RESUME {
+			/* Received CCBS_T_Resume */
+			Action Reset_A_Status;
+		}
+	}
+	State CC_STATE_WAIT_CALLBACK {
+		Stimulus CC_EVENT_SUSPEND {
+			/* Received CCBS_T_Suspend */
+			Action Set_A_Status_Busy;
+			Action Pass_Up_A_Status;
+			Next_State CC_STATE_SUSPENDED;
+		}
+	}
+	State CC_STATE_SUSPENDED {
+		Stimulus CC_EVENT_RESUME {
+			/* Received CCBS_T_Resume */
+			Action Set_A_Status_Free;
+			Action Pass_Up_A_Status;
+			Next_State CC_STATE_ACTIVATED;
+		}
+	}
+	Superstate CC_ACTIVE(CC_STATE_ACTIVATED, CC_STATE_WAIT_CALLBACK, CC_STATE_SUSPENDED) {
+		Prolog {
+			/* Start T_CCBS5/T_CCNR5 depending upon CC mode. */
+			Action Start_T_SUPERVISION;
+		}
+		Epilog {
+			Action Stop_T_SUPERVISION;
+		}
+		Stimulus CC_EVENT_RECALL {
+			/* Received CCBS_T_Call */
+			Action Pass_Up_CC_Call;
+			Action Set_Original_Call_Parameters;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_SUPERVISION {
+			Action Pass_Up_CC_Cancel;
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_SIGNALING_GONE {
+			/* Signaling link cleared. */
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+}

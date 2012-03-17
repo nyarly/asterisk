@@ -1,0 +1,168 @@
+/*
+ * FSM pseudo code used in the design/implementation of the CC PTP monitor.
+ */
+FSM CC_PTP_Monitor
+{
+	State CC_STATE_IDLE {
+		Init {
+		}
+		Prolog {
+			Action Set_Selfdestruct;
+		}
+		Stimulus CC_EVENT_AVAILABLE {
+			/* Received CCBS-T-Aailable */
+			Action Pass_Up_CC_Available;
+			Next_State CC_STATE_AVAILABLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Set_Selfdestruct;
+		}
+	}
+	State CC_STATE_AVAILABLE {
+		/*
+		 * The upper layer is responsible for canceling the CC available
+		 * offering.
+		 */
+		Stimulus CC_EVENT_CC_REQUEST {
+			/*
+			 * Before event is posted:
+			 *   cc_record->is_ccnr is set.
+			 *   The signaling connection call record is created.
+			 */
+			Action Queue_CC_Request;
+			/*
+			 * For PTP mode the T_ACTIVATE timer is not defined.  However,
+			 * we will use it to protect our resources from leaks caused
+			 * by the network cable being disconnected.
+			 * This timer should be set longer than normal so the
+			 * CC records will normally be cleaned up by network activity.
+			 */
+			Action Start_T_ACTIVATE;
+			Next_State CC_STATE_REQUESTED;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_REQUESTED {
+		Epilog {
+			Action Stop_T_ACTIVATE;
+		}
+		Stimulus CC_EVENT_CC_REQUEST_ACCEPT {
+			/*
+			 * Received CCBS-T-Request/CCNR-T-Request response
+			 * Before event is posted:
+			 *   Negotiated CC retention setting saved
+			 */
+			Action Pass_Up_CC_Req_Rsp_Success;
+			Next_State CC_STATE_ACTIVATED;
+		}
+		Stimulus CC_EVENT_CC_REQUEST_FAIL {
+			Action Pass_Up_CC_Req_Rsp_Fail(error/reject, code);
+			Action Pass_Up_CC_Cancel;
+			/*
+			 * If this request fail comes in with the RELEASE_COMPLETE
+			 * message then the post action will never get a chance to
+			 * run.  It will be aborted because the CC_EVENT_SIGNALING_GONE
+			 * will be processed first.
+			 */
+			Action Post_HANGUP_SIGNALING;
+			Next_State CC_STATE_WAIT_DESTRUCTION;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_ACTIVATE {
+			Action Pass_Up_CC_Req_Rsp_Timeout;
+			Action Pass_Up_CC_Cancel;
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_SIGNALING_GONE {
+			/* Claim it was a timeout */
+			Action Pass_Up_CC_Req_Rsp_Timeout;
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_WAIT_DESTRUCTION {
+		/*
+		 * Delayed disconnect of the signaling link to allow subcmd events
+		 * from the signaling link to be passed up.
+		 */
+		Stimulus CC_EVENT_SIGNALING_GONE {
+			/* Signaling link cleared. */
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_HANGUP_SIGNALING {
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_ACTIVATED {
+		Prolog {
+			Action Reset_A_Status;
+		}
+		Stimulus CC_EVENT_REMOTE_USER_FREE {
+			/* Received CCBS_T_RemoteUserFree */
+			Action Pass_Up_Remote_User_Free;
+			Test = Get_A_Status;
+			Test == Busy {
+				Next_State CC_STATE_SUSPENDED;
+			}
+			Next_State CC_STATE_WAIT_CALLBACK;
+		}
+		Stimulus CC_EVENT_SUSPEND {
+			Action Set_A_Status_Busy;
+		}
+		Stimulus CC_EVENT_RESUME {
+			Action Reset_A_Status;
+		}
+	}
+	State CC_STATE_WAIT_CALLBACK {
+		Stimulus CC_EVENT_SUSPEND {
+			Next_State CC_STATE_SUSPENDED;
+		}
+	}
+	State CC_STATE_SUSPENDED {
+		Prolog {
+			Action Send_CC_Suspend;
+		}
+		Stimulus CC_EVENT_RESUME {
+			Action Send_CC_Resume;
+			Next_State CC_STATE_ACTIVATED;
+		}
+	}
+	Superstate CC_ACTIVE(CC_STATE_ACTIVATED, CC_STATE_WAIT_CALLBACK, CC_STATE_SUSPENDED) {
+		Prolog {
+			/* Start T_CCBS6/T_CCNR6 depending upon CC mode. */
+			Action Start_T_SUPERVISION;
+		}
+		Epilog {
+			Action Stop_T_SUPERVISION;
+		}
+		Stimulus CC_EVENT_RECALL {
+			/* The original call parameters have already been set. */
+			Action Queue_SETUP_Recall;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_SUPERVISION {
+			Action Pass_Up_CC_Cancel;
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_SIGNALING_GONE {
+			/* Signaling link cleared. */
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Hangup_Signaling_Link;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+}

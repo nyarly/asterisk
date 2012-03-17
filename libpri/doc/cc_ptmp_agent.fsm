@@ -1,0 +1,376 @@
+/*
+ * FSM pseudo code used in the design/implementation of the CC PTMP agent.
+ */
+FSM CC_PTMP_Agent
+{
+	State CC_STATE_IDLE {
+		Init {
+		}
+		Prolog {
+			Action Set_Selfdestruct;
+		}
+		Stimulus CC_EVENT_AVAILABLE {
+			Next_State CC_STATE_PENDING_AVAILABLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Set_Selfdestruct;
+		}
+	}
+	State CC_STATE_PENDING_AVAILABLE {
+		Stimulus CC_EVENT_MSG_ALERTING {
+			Action Send_CC_Available(Q931_ALERTING);
+			Next_State CC_STATE_AVAILABLE;
+		}
+		Stimulus CC_EVENT_MSG_DISCONNECT {
+			Action Send_CC_Available(Q931_DISCONNECT);
+			Next_State CC_STATE_AVAILABLE;
+		}
+		Stimulus CC_EVENT_INTERNAL_CLEARING {
+			Action Release_LinkID;
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Release_LinkID;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_AVAILABLE {
+		Epilog {
+			Action Stop_T_RETENTION;
+		}
+		Stimulus CC_EVENT_MSG_RELEASE {
+			Action Stop_T_RETENTION;
+			Action Start_T_RETENTION;
+		}
+		Stimulus CC_EVENT_MSG_RELEASE_COMPLETE {
+			Action Stop_T_RETENTION;
+			Action Start_T_RETENTION;
+		}
+		Stimulus CC_EVENT_CC_REQUEST {
+			Action Pass_Up_CC_Request;
+			Next_State CC_STATE_REQUESTED;
+		}
+		Stimulus CC_EVENT_INTERNAL_CLEARING {
+			Action Stop_T_RETENTION;
+			Action Start_T_RETENTION;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_RETENTION {
+			Action Send_EraseCallLinkageID;
+			Action Release_LinkID;
+			Action Pass_Up_CC_Cancel;
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Send_EraseCallLinkageID;
+			Action Release_LinkID;
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	State CC_STATE_REQUESTED {
+		Epilog {
+			Action Send_EraseCallLinkageID;
+			Action Release_LinkID;
+		}
+		Stimulus CC_EVENT_CC_REQUEST_ACCEPT {
+			Next_State CC_STATE_ACTIVATED;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Next_State CC_STATE_IDLE;
+		}
+	}
+/*
+ * Pass_Up_A_Status passes up the current final status of A.
+ * Does nothing if status is invalid.
+ *
+ * Pass_Up_A_Status_Indirect is the same as Pass_Up_A_Status but
+ * sets a timer to expire immediately to pass up the event.
+ * Does nothing if status is invalid.
+ *
+ * Pass_Up_Status_Rsp_A passes up the current accumulated status of A.
+ * Does nothing if status is invalid.
+ *
+ * Pass_Up_Status_Rsp_A_Indirect is the same as Pass_Up_Status_Rsp_A but
+ * sets a timer to expire immediately to pass up the event.
+ * Does nothing if status is invalid.
+ */
+	State CC_STATE_ACTIVATED {
+		Prolog {
+			Action Reset_A_Status;
+			Action Raw_Status_Count_Reset;
+		}
+		Stimulus CC_EVENT_RECALL {
+			Action Send_Error_Recall(ROSE_ERROR_CCBS_NotReadyForCall);
+			Action Set_Call_To_Hangup;
+		}
+		Stimulus CC_EVENT_B_FREE {
+			Action Send_CCBSBFree;
+		}
+		Stimulus CC_EVENT_REMOTE_USER_FREE {
+			Test = Get_A_Status;
+			Test == Invalid {
+				Next_State CC_STATE_B_AVAILABLE;
+			}
+			Test == Busy {
+				Action Pass_Up_A_Status_Indirect;
+				Action Send_CCBSBFree;
+				Next_State CC_STATE_SUSPENDED;
+			}
+			Test == Free {
+				//Action Pass_Up_A_Status_Indirect;
+				Action Send_RemoteUserFree;
+				Next_State CC_STATE_WAIT_CALLBACK;
+			}
+		}
+		Stimulus CC_EVENT_A_STATUS {
+			Test = Get_T_CCBS1_Status;
+			Test == Active {
+				Action Pass_Up_Status_Rsp_A_Indirect;
+				Next_State $;
+			}
+			Test != Active {
+				Action Reset_A_Status;
+				Action Reset_Raw_A_Status;
+				Action Send_CCBSStatusRequest;
+				Action Start_T_CCBS1;
+				Action Stop_Extended_T_CCBS1;
+				Action Start_Extended_T_CCBS1;
+				Next_State $;
+			}
+		}
+		Stimulus CC_EVENT_A_FREE {
+			Action Raw_Status_Count_Reset;
+			Action Set_Raw_A_Status_Free;
+			Action Promote_Raw_A_Status;
+			Action Pass_Up_Status_Rsp_A;
+			Action Stop_T_CCBS1;
+		}
+		Stimulus CC_EVENT_A_BUSY {
+			Action Add_Raw_A_Status_Busy;
+			Action Pass_Up_Status_Rsp_A;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_CCBS1 {
+			Action Promote_Raw_A_Status;
+			Test = Get_A_Status;
+			Test != Invalid {
+				/* Only received User A busy. */
+				Action Raw_Status_Count_Reset;
+			}
+			Test == Invalid {
+				/* Did not get any responses. */
+				Action Raw_Status_Count_Increment;
+				Test = Get_Raw_Status_Count;
+				Test >= RAW_STATUS_COUNT_MAX {
+					/* User A no longer present. */
+					Action Send_CCBSErase(Normal_Unspecified);
+					Action Pass_Up_CC_Cancel;
+					Next_State CC_STATE_IDLE;
+				}
+			}
+		}
+		Stimulus CC_EVENT_TIMEOUT_EXTENDED_T_CCBS1 {
+			Action Reset_A_Status;
+			Action Raw_Status_Count_Reset;
+		}
+	}
+	State CC_STATE_B_AVAILABLE {
+		/* A status is always invalid on entry. */
+		Prolog {
+			Test = Get_T_CCBS1_Status;
+			Test != Active {
+				Action Reset_Raw_A_Status;
+				Action Send_CCBSStatusRequest;
+				Action Start_T_CCBS1;
+			}
+		}
+		Stimulus CC_EVENT_RECALL {
+			Action Send_Error_Recall(ROSE_ERROR_CCBS_NotReadyForCall);
+			Action Set_Call_To_Hangup;
+		}
+		Stimulus CC_EVENT_A_STATUS {
+			Action Stop_Extended_T_CCBS1;
+			Action Start_Extended_T_CCBS1;
+			Action Pass_Up_Status_Rsp_A_Indirect;
+		}
+		Stimulus CC_EVENT_A_FREE {
+			Action Send_RemoteUserFree;
+			Action Set_Raw_A_Status_Free;
+			//Action Promote_Raw_A_Status;
+			//Action Pass_Up_A_Status;
+			Test = Get_Extended_T_CCBS1_Status;
+			Test == Active {
+				Action Pass_Up_Status_Rsp_A;
+			}
+			Next_State CC_STATE_WAIT_CALLBACK;
+		}
+		Stimulus CC_EVENT_A_BUSY {
+			Action Add_Raw_A_Status_Busy;
+			Test = Get_Extended_T_CCBS1_Status;
+			Test == Active {
+				Action Pass_Up_Status_Rsp_A;
+			}
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_CCBS1 {
+			Test = Get_Raw_A_Status;
+			Test != Invalid {
+				/* Only received User A is busy. */
+				Action Raw_Status_Count_Reset;
+				Action Send_CCBSBFree;
+				Action Promote_Raw_A_Status;
+				Action Pass_Up_A_Status;
+				Next_State CC_STATE_SUSPENDED;
+			}
+			Test == Invalid {
+				/* Did not get any responses. */
+				Action Raw_Status_Count_Increment;
+				Test = Get_Raw_Status_Count;
+				Test >= RAW_STATUS_COUNT_MAX {
+					/* User A no longer present. */
+					Action Send_CCBSErase(Normal_Unspecified);
+					Action Pass_Up_CC_Cancel;
+					Next_State CC_STATE_IDLE;
+				}
+				//Action Reset_Raw_A_Status;
+				Action Send_CCBSStatusRequest;
+				Action Start_T_CCBS1;
+			}
+		}
+	}
+	State CC_STATE_SUSPENDED {
+		Prolog {
+			Test = Get_T_CCBS1_Status;
+			Test != Active {
+				Action Reset_Raw_A_Status;
+				Action Send_CCBSStatusRequest;
+				Action Start_T_CCBS1;
+			}
+		}
+		Stimulus CC_EVENT_RECALL {
+			Action Send_Error_Recall(ROSE_ERROR_CCBS_NotReadyForCall);
+			Action Set_Call_To_Hangup;
+		}
+		Stimulus CC_EVENT_A_STATUS {
+			Action Stop_Extended_T_CCBS1;
+			Action Start_Extended_T_CCBS1;
+			Action Pass_Up_Status_Rsp_A_Indirect;
+		}
+		Stimulus CC_EVENT_A_FREE {
+			Action Set_Raw_A_Status_Free;
+			Action Promote_Raw_A_Status;
+			Action Pass_Up_A_Status;
+			Test = Get_Extended_T_CCBS1_Status;
+			Test == Active {
+				Action Pass_Up_Status_Rsp_A;
+			}
+			Action Stop_T_CCBS1;
+			Action Stop_Extended_T_CCBS1;
+			Next_State CC_STATE_ACTIVATED;
+		}
+		Stimulus CC_EVENT_A_BUSY {
+			Action Add_Raw_A_Status_Busy;
+			Test = Get_Extended_T_CCBS1_Status;
+			Test == Active {
+				Action Pass_Up_Status_Rsp_A;
+			}
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_CCBS1 {
+			Test = Get_Raw_A_Status;
+			Test != Invalid {
+				/* Only received User A is busy. */
+				Action Raw_Status_Count_Reset;
+			}
+			Test == Invalid {
+				/* Did not get any responses. */
+				Action Raw_Status_Count_Increment;
+				Test = Get_Raw_Status_Count;
+				Test >= RAW_STATUS_COUNT_MAX {
+					/* User A no longer present. */
+					Action Send_CCBSErase(Normal_Unspecified);
+					Action Pass_Up_CC_Cancel;
+					Next_State CC_STATE_IDLE;
+				}
+			}
+			Action Reset_Raw_A_Status;
+			Action Send_CCBSStatusRequest;
+			Action Start_T_CCBS1;
+		}
+	}
+	State CC_STATE_WAIT_CALLBACK {
+		Prolog {
+			/* Start T_CCBS3 */
+			Action Start_T_RECALL;
+		}
+		Epilog {
+			Action Stop_T_RECALL;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_RECALL {
+			Action Pass_Up_CC_Cancel;
+			Action Send_CCBSErase(T_CCBS3_TIMEOUT);
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_STOP_ALERTING {
+			/*
+			 * If an earlier link can send us this event then we
+			 * really should be configured for globalRecall like
+			 * the earlier link.
+			 */
+			Test = Get_Recall_Mode;
+			Test == globalRecall {
+				Action Send_CCBSStopAlerting;
+			}
+			Next_State CC_STATE_ACTIVATED;
+		}
+		Stimulus CC_EVENT_RECALL {
+			Action Pass_Up_CC_Call;
+			Action Set_Original_Call_Parameters;
+			Test = Get_Recall_Mode;
+			Test == globalRecall {
+				Action Send_CCBSStopAlerting;
+			}
+			Next_State CC_STATE_CALLBACK;
+		}
+		Stimulus CC_EVENT_A_STATUS {
+			Action Set_Raw_A_Status_Free;
+			Action Pass_Up_Status_Rsp_A_Indirect;
+		}
+	}
+	State CC_STATE_CALLBACK {
+		Stimulus CC_EVENT_RECALL {
+			Action Send_Error_Recall(ROSE_ERROR_CCBS_AlreadyAccepted);
+			Action Set_Call_To_Hangup;
+		}
+		Stimulus CC_EVENT_A_STATUS {
+			Action Set_Raw_A_Status_Free;
+			Action Pass_Up_Status_Rsp_A_Indirect;
+		}
+	}
+	Superstate CC_ACTIVE(CC_STATE_ACTIVATED, CC_STATE_B_AVAILABLE, CC_STATE_SUSPENDED, CC_STATE_WAIT_CALLBACK, CC_STATE_CALLBACK) {
+		Prolog {
+			/* Start T_CCBS2 or T_CCNR2 depending upon CC mode. */
+			Action Start_T_SUPERVISION;
+		}
+		Epilog {
+			Action Stop_T_SUPERVISION;
+		}
+		Stimulus CC_EVENT_TIMEOUT_T_SUPERVISION {
+			Action Pass_Up_CC_Cancel;
+			Action Send_CCBSErase(T_CCBS2_TIMEOUT);
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_LINK_CANCEL {
+			Action Pass_Up_CC_Cancel;
+			Action Send_CCBSErase(Normal_Unspecified);
+			Next_State CC_STATE_IDLE;
+		}
+		Stimulus CC_EVENT_CANCEL {
+			Action Send_CCBSErase(Normal_Unspecified);
+			Next_State CC_STATE_IDLE;
+		}
+	}
+	Superstate CC_STATUS(CC_STATE_ACTIVATED, CC_STATE_B_AVAILABLE, CC_STATE_SUSPENDED) {
+		Epilog {
+			Action Stop_T_CCBS1;
+			Action Stop_Extended_T_CCBS1;
+		}
+	}
+}
